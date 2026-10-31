@@ -26,6 +26,7 @@ import {
   todayISO,
 } from "../lib/expenses";
 import Accounts from "./Accounts";
+import Backup from "./Backup";
 import Catalogs from "./Catalogs";
 import ExpenseForm from "./ExpenseForm";
 import ExpenseList from "./ExpenseList";
@@ -220,6 +221,14 @@ export default function ExpenseTracker() {
     });
   }
 
+  // после восстановления из копии перечитываем всё — загрузчики заодно применят миграции
+  function reloadAll() {
+    setEntries(loadEntries());
+    setSettings(loadSettings());
+    setRecurring(loadRecurring());
+    setTransfers(loadTransfers());
+  }
+
   function addCatalogItem(tab: EntryType | "sources", name: string) {
     if (tab === "sources") addSource(name);
     else addCategory(tab, name);
@@ -311,6 +320,7 @@ export default function ExpenseTracker() {
           onAdd={addCatalogItem}
           onDelete={deleteCatalogItem}
         />
+        <Backup onRestored={reloadAll} />
       </div>
     </div>
   );

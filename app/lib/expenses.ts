@@ -443,6 +443,88 @@ export function saveTransfers(items: Transfer[]) {
   write(TRANSFERS_KEY, items);
 }
 
+const BACKUP_APP = "expense-tracker";
+const BACKUP_KEYS = {
+  entries: ENTRIES_KEY,
+  settings: SETTINGS_KEY,
+  recurring: RECURRING_KEY,
+  transfers: TRANSFERS_KEY,
+} as const;
+
+export type Backup = {
+  app: typeof BACKUP_APP;
+  createdAt: string; // ISO-время создания копии
+  data: Record<keyof typeof BACKUP_KEYS, unknown>;
+};
+
+/**
+ * Резервная копия всех данных. Берём сырые значения из localStorage: в настройках
+ * хранится версия, и при восстановлении старой копии сработают обычные миграции.
+ */
+export function createBackup(): Backup {
+  const data = {} as Backup["data"];
+  for (const [name, key] of Object.entries(BACKUP_KEYS)) {
+    const raw = localStorage.getItem(key);
+    data[name as keyof typeof BACKUP_KEYS] = raw ? JSON.parse(raw) : null;
+  }
+  return { app: BACKUP_APP, createdAt: new Date().toISOString(), data };
+}
+
+/** Разбирает файл копии; при ошибке бросает исключение с понятным текстом. */
+export function parseBackup(text: string): Backup {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("Файл повреждён или это не резервная копия");
+  }
+  if (parsed?.app !== BACKUP_APP || typeof parsed.data !== "object" || !parsed.data)
+    throw new Error("Это не резервная копия трекера");
+  const { entries, settings, recurring, transfers } = parsed.data;
+  const listOrNull = (v: unknown) => v === null || Array.isArray(v);
+  if (!listOrNull(entries) || !listOrNull(recurring) || !listOrNull(transfers))
+    throw new Error("В копии неверный формат данных");
+  if (settings !== null && typeof settings !== "object")
+    throw new Error("В копии неверный формат данных");
+  return parsed;
+}
+
+/** Заменяет все данные копией; после этого их нужно заново прочитать load-функциями. */
+export function restoreBackup(backup: Backup) {
+  const previous = Object.values(BACKUP_KEYS).map((key) => [key, localStorage.getItem(key)] as const);
+  const put = (key: string, raw: string | null) =>
+    raw === null ? localStorage.removeItem(key) : localStorage.setItem(key, raw);
+  try {
+    for (const [name, key] of Object.entries(BACKUP_KEYS)) {
+      const value = backup.data[name as keyof typeof BACKUP_KEYS];
+      put(key, value === null || value === undefined ? null : JSON.stringify(value));
+    }
+  } catch {
+    // не записалось (например, переполнение) — возвращаем прежние данные целиком
+    for (const [key, raw] of previous) put(key, raw);
+    throw new Error("Не удалось сохранить данные в браузере");
+  }
+}
+
+const LAST_BACKUP_KEY = "expense-tracker:last-backup";
+
+/** Дата последней скачанной копии (YYYY-MM-DD) или пустая строка. */
+export function loadLastBackup() {
+  try {
+    return localStorage.getItem(LAST_BACKUP_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveLastBackup(date: string) {
+  try {
+    localStorage.setItem(LAST_BACKUP_KEY, date);
+  } catch {
+    // не критично — просто не покажем дату
+  }
+}
+
 /** Курсы ЦБ РФ; USDT привязан к доллару, поэтому берём курс USD. */
 export async function fetchCbrRates(): Promise<{ rates: Rates; date: string }> {
   const res = await fetch("https://www.cbr-xml-daily.ru/daily_json.js");
