@@ -209,58 +209,59 @@ export function categoryStyle(name: string): Style {
   return PALETTE[hash % PALETTE.length];
 }
 
-const ENTRIES_KEY = "expense-tracker:expenses";
-const SETTINGS_KEY = "expense-tracker:settings";
+/** Данные трекера в сыром виде — так они лежат в базе и в резервной копии. */
+export type StoreKey = "entries" | "settings" | "recurring" | "transfers";
+export type RawStore = Record<StoreKey, unknown>;
+export const STORE_KEYS: StoreKey[] = ["entries", "settings", "recurring", "transfers"];
+/** Номер версии каждого раздела в базе; 0 — раздела ещё нет. */
+export type Versions = Record<StoreKey, number>;
 
-export function loadEntries(): Entry[] {
-  try {
-    const raw = localStorage.getItem(ENTRIES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    // записи из ранних версий: без type — это расходы, без счёта — наличные
-    return parsed.map((e) => ({
-      ...e,
-      type: e.type === "income" ? "income" : "expense",
-      accountId: e.accountId ?? DEFAULT_ACCOUNT_ID,
-    }));
-  } catch {
-    return [];
-  }
+export function parseEntries(raw: unknown): Entry[] {
+  if (!Array.isArray(raw)) return [];
+  // записи из ранних версий: без type — это расходы, без счёта — наличные
+  return raw.map((e) => ({
+    ...e,
+    type: e.type === "income" ? "income" : "expense",
+    accountId: e.accountId ?? DEFAULT_ACCOUNT_ID,
+  }));
 }
 
-export function saveEntries(entries: Entry[]) {
-  write(ENTRIES_KEY, entries);
+/** Список (обязательные платежи, переводы) или пустой, если данных нет. */
+export function parseList<T>(raw: unknown): T[] {
+  return Array.isArray(raw) ? raw : [];
 }
 
-export function loadSettings(): Settings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw);
-    const settings: Settings = {
-      categories: {
-        expense: parsed.categories?.expense ?? DEFAULT_SETTINGS.categories.expense,
-        income: parsed.categories?.income ?? DEFAULT_SETTINGS.categories.income,
-      },
-      sources: parsed.sources ?? DEFAULT_SETTINGS.sources,
-      accounts: parsed.accounts ?? DEFAULT_SETTINGS.accounts,
-      rates: { ...DEFAULT_SETTINGS.rates, ...parsed.rates },
-      ratesDate: parsed.ratesDate ?? "",
-      ratesUpdated: parsed.ratesUpdated ?? "",
-      ratesManual: parsed.ratesManual ?? false,
-    };
-    if (parsed.version === SETTINGS_VERSION) return settings;
-    let migrated = settings;
-    const version = parsed.version ?? 1;
-    if (version < 2) migrated = migrateToV2(migrated, loadEntries());
-    if (version < 3) migrated = migrateToV3(migrated);
-    migrated = migrateToV4(migrated, loadEntries());
-    saveSettings(migrated);
-    return migrated;
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
+/** Настройки для сохранения — с версией, по которой потом сработают миграции. */
+export function settingsForStore(settings: Settings) {
+  return { ...settings, version: SETTINGS_VERSION };
+}
+
+/** Настройки из сырых данных; migrated — данные были старой версии, их стоит пересохранить. */
+export function parseSettings(
+  raw: unknown,
+  entries: Entry[],
+): { settings: Settings; migrated: boolean } {
+  if (!raw || typeof raw !== "object") return { settings: DEFAULT_SETTINGS, migrated: false };
+  const parsed = raw as Partial<Settings> & { version?: number };
+  const settings: Settings = {
+    categories: {
+      expense: parsed.categories?.expense ?? DEFAULT_SETTINGS.categories.expense,
+      income: parsed.categories?.income ?? DEFAULT_SETTINGS.categories.income,
+    },
+    sources: parsed.sources ?? DEFAULT_SETTINGS.sources,
+    accounts: parsed.accounts ?? DEFAULT_SETTINGS.accounts,
+    rates: { ...DEFAULT_SETTINGS.rates, ...parsed.rates },
+    ratesDate: parsed.ratesDate ?? "",
+    ratesUpdated: parsed.ratesUpdated ?? "",
+    ratesManual: parsed.ratesManual ?? false,
+  };
+  if (parsed.version === SETTINGS_VERSION) return { settings, migrated: false };
+  let migrated = settings;
+  const version = parsed.version ?? 1;
+  if (version < 2) migrated = migrateToV2(migrated, entries);
+  if (version < 3) migrated = migrateToV3(migrated);
+  migrated = migrateToV4(migrated, entries);
+  return { settings: migrated, migrated: true };
 }
 
 /**
@@ -318,34 +319,6 @@ function migrateToV4(old: Settings, entries: Entry[]): Settings {
       return { ...a, currency: preset && fresh ? preset : "RUB" };
     }),
   };
-}
-
-export function saveSettings(settings: Settings) {
-  write(SETTINGS_KEY, { ...settings, version: SETTINGS_VERSION });
-}
-
-function write(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // localStorage недоступен (приватный режим, переполнение) — игнорируем
-  }
-}
-
-const RECURRING_KEY = "expense-tracker:recurring";
-
-export function loadRecurring(): Recurring[] {
-  try {
-    const raw = localStorage.getItem(RECURRING_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveRecurring(items: Recurring[]) {
-  write(RECURRING_KEY, items);
 }
 
 export function isDueInMonth(r: Recurring, month: string) {
@@ -427,46 +400,15 @@ export function accountLabel(a: Account) {
   return currency === "RUB" ? base : `${base}, ${CURRENCY_SYMBOLS[currency]}`;
 }
 
-const TRANSFERS_KEY = "expense-tracker:transfers";
-
-export function loadTransfers(): Transfer[] {
-  try {
-    const raw = localStorage.getItem(TRANSFERS_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveTransfers(items: Transfer[]) {
-  write(TRANSFERS_KEY, items);
-}
-
 const BACKUP_APP = "expense-tracker";
-const BACKUP_KEYS = {
-  entries: ENTRIES_KEY,
-  settings: SETTINGS_KEY,
-  recurring: RECURRING_KEY,
-  transfers: TRANSFERS_KEY,
-} as const;
 
 export type Backup = {
   app: typeof BACKUP_APP;
   createdAt: string; // ISO-время создания копии
-  data: Record<keyof typeof BACKUP_KEYS, unknown>;
+  data: RawStore;
 };
 
-/**
- * Резервная копия всех данных. Берём сырые значения из localStorage: в настройках
- * хранится версия, и при восстановлении старой копии сработают обычные миграции.
- */
-export function createBackup(): Backup {
-  const data = {} as Backup["data"];
-  for (const [name, key] of Object.entries(BACKUP_KEYS)) {
-    const raw = localStorage.getItem(key);
-    data[name as keyof typeof BACKUP_KEYS] = raw ? JSON.parse(raw) : null;
-  }
+export function createBackup(data: RawStore): Backup {
   return { app: BACKUP_APP, createdAt: new Date().toISOString(), data };
 }
 
@@ -480,29 +422,57 @@ export function parseBackup(text: string): Backup {
   }
   if (parsed?.app !== BACKUP_APP || typeof parsed.data !== "object" || !parsed.data)
     throw new Error("Это не резервная копия трекера");
-  const { entries, settings, recurring, transfers } = parsed.data;
-  const listOrNull = (v: unknown) => v === null || Array.isArray(v);
-  if (!listOrNull(entries) || !listOrNull(recurring) || !listOrNull(transfers))
-    throw new Error("В копии неверный формат данных");
-  if (settings !== null && typeof settings !== "object")
-    throw new Error("В копии неверный формат данных");
+  if (!isRawStore(parsed.data)) throw new Error("В копии неверный формат данных");
   return parsed;
 }
 
-/** Заменяет все данные копией; после этого их нужно заново прочитать load-функциями. */
-export function restoreBackup(backup: Backup) {
-  const previous = Object.values(BACKUP_KEYS).map((key) => [key, localStorage.getItem(key)] as const);
-  const put = (key: string, raw: string | null) =>
-    raw === null ? localStorage.removeItem(key) : localStorage.setItem(key, raw);
+/** Формат данных: списки — массивы, настройки — объект; отсутствие допустимо. */
+export function isRawStore(data: unknown): data is RawStore {
+  if (!data || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+  const listOrEmpty = (v: unknown) => v == null || Array.isArray(v);
+  return (
+    listOrEmpty(d.entries) &&
+    listOrEmpty(d.recurring) &&
+    listOrEmpty(d.transfers) &&
+    (d.settings == null || (typeof d.settings === "object" && !Array.isArray(d.settings)))
+  );
+}
+
+// до базы данных всё хранилось в браузере под этими ключами
+const LEGACY_KEYS: Record<StoreKey, string> = {
+  entries: "expense-tracker:expenses",
+  settings: "expense-tracker:settings",
+  recurring: "expense-tracker:recurring",
+  transfers: "expense-tracker:transfers",
+};
+const LEGACY_MOVED_KEY = "expense-tracker:moved-to-db";
+
+/** Данные из этого браузера, сохранённые до перехода на базу, если их ещё не перенесли. */
+export function loadLegacyData(): RawStore | null {
   try {
-    for (const [name, key] of Object.entries(BACKUP_KEYS)) {
-      const value = backup.data[name as keyof typeof BACKUP_KEYS];
-      put(key, value === null || value === undefined ? null : JSON.stringify(value));
+    if (localStorage.getItem(LEGACY_MOVED_KEY)) return null;
+    const data = {} as RawStore;
+    for (const key of STORE_KEYS) {
+      const raw = localStorage.getItem(LEGACY_KEYS[key]);
+      data[key] = raw ? JSON.parse(raw) : null;
     }
+    // одни настройки без операций старая версия создавала при любом открытии — это не данные
+    const hasRecords = [data.entries, data.recurring, data.transfers].some(
+      (list) => Array.isArray(list) && list.length > 0,
+    );
+    return hasRecords && isRawStore(data) ? data : null;
   } catch {
-    // не записалось (например, переполнение) — возвращаем прежние данные целиком
-    for (const [key, raw] of previous) put(key, raw);
-    throw new Error("Не удалось сохранить данные в браузере");
+    return null;
+  }
+}
+
+/** Отмечает перенос; сами старые данные в браузере остаются как запасная копия. */
+export function markLegacyMoved() {
+  try {
+    localStorage.setItem(LEGACY_MOVED_KEY, todayISO());
+  } catch {
+    // не критично — предложение перенести появится снова
   }
 }
 

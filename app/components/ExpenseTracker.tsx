@@ -10,19 +10,17 @@ import {
   type Rates,
   type Recurring,
   type Settings,
+  type RawStore,
+  type Versions,
   accountCurrency,
   fetchCbrRates,
   findName,
   dueDate,
-  loadEntries,
   accountUsed,
-  loadRecurring,
-  loadTransfers,
-  loadSettings,
-  saveEntries,
-  saveRecurring,
-  saveTransfers,
-  saveSettings,
+  parseEntries,
+  parseList,
+  parseSettings,
+  settingsForStore,
   todayISO,
 } from "../lib/expenses";
 import Accounts from "./Accounts";
@@ -32,19 +30,53 @@ import ExpenseForm from "./ExpenseForm";
 import ExpenseList from "./ExpenseList";
 import RecurringPayments from "./RecurringPayments";
 import Summary from "./Summary";
+import { type SyncProblem, useSync } from "./useSync";
 
-export default function ExpenseTracker() {
-  use(browser("Доходы, расходы и справочники хранятся в localStorage."));
+function parseStore(data: RawStore) {
+  const entries = parseEntries(data.entries);
+  const { settings, migrated } = parseSettings(data.settings, entries);
+  return {
+    entries,
+    settings,
+    settingsMigrated: migrated,
+    recurring: parseList<Recurring>(data.recurring),
+    transfers: parseList<Transfer>(data.transfers),
+  };
+}
 
-  const [entries, setEntries] = useState<Entry[]>(loadEntries);
-  const [settings, setSettings] = useState<Settings>(loadSettings);
-  const [recurring, setRecurring] = useState<Recurring[]>(loadRecurring);
-  const [transfers, setTransfers] = useState<Transfer[]>(loadTransfers);
+type Props = {
+  initialData: RawStore;
+  initialVersions: Versions;
+};
+
+export default function ExpenseTracker({ initialData, initialVersions }: Props) {
+  // данные приходят с сервера, но перенос из старой версии и дата копии — в localStorage
+  use(browser("Старые данные и дата резервной копии хранятся в localStorage."));
+
+  const [initial] = useState(() => parseStore(initialData));
+  const [entries, setEntries] = useState<Entry[]>(initial.entries);
+  const [settings, setSettings] = useState<Settings>(initial.settings);
+  const [recurring, setRecurring] = useState<Recurring[]>(initial.recurring);
+  const [transfers, setTransfers] = useState<Transfer[]>(initial.transfers);
   const [month, setMonth] = useState(() => todayISO().slice(0, 7));
   const [ratesStatus, setRatesStatus] = useState<"idle" | "loading" | "error">(
     "idle",
   );
   const autoRatesTried = useRef(false);
+  const sync = useSync(initialVersions);
+
+  const saveEntries = (next: Entry[]) => sync.save("entries", next);
+  const saveSettings = (next: Settings) => sync.save("settings", settingsForStore(next));
+  const saveRecurring = (next: Recurring[]) => sync.save("recurring", next);
+  const saveTransfers = (next: Transfer[]) => sync.save("transfers", next);
+
+  // настройки старой версии после миграции сохраняем в новом виде
+  const migrationSaved = useRef(false);
+  useEffect(() => {
+    if (migrationSaved.current || !initial.settingsMigrated) return;
+    migrationSaved.current = true;
+    sync.save("settings", settingsForStore(initial.settings));
+  });
 
   function updateSettings(next: Settings) {
     setSettings(next);
@@ -221,12 +253,19 @@ export default function ExpenseTracker() {
     });
   }
 
-  // после восстановления из копии перечитываем всё — загрузчики заодно применят миграции
-  function reloadAll() {
-    setEntries(loadEntries());
-    setSettings(loadSettings());
-    setRecurring(loadRecurring());
-    setTransfers(loadTransfers());
+  // восстановление из копии: сначала база, потом экран; миграции применятся при разборе
+  async function replaceAllData(data: RawStore) {
+    const parsed = parseStore(data);
+    const stored = { ...data, settings: data.settings == null ? null : settingsForStore(parsed.settings) };
+    await sync.replace(stored);
+    setEntries(parsed.entries);
+    setSettings(parsed.settings);
+    setRecurring(parsed.recurring);
+    setTransfers(parsed.transfers);
+  }
+
+  function currentData(): RawStore {
+    return { entries, settings: settingsForStore(settings), recurring, transfers };
   }
 
   function addCatalogItem(tab: EntryType | "sources", name: string) {
@@ -252,6 +291,8 @@ export default function ExpenseTracker() {
   }
 
   return (
+    <>
+    {sync.problem && <SyncBanner problem={sync.problem} />}
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
       <div className="flex min-w-0 flex-col gap-5">
         <ExpenseForm
@@ -320,8 +361,30 @@ export default function ExpenseTracker() {
           onAdd={addCatalogItem}
           onDelete={deleteCatalogItem}
         />
-        <Backup onRestored={reloadAll} />
+        <Backup getData={currentData} onReplace={replaceAllData} />
       </div>
+    </div>
+    </>
+  );
+}
+
+const SYNC_MESSAGES: Record<NonNullable<SyncProblem>, string> = {
+  error: "Не удалось сохранить последние изменения. Проверьте интернет и обновите страницу.",
+  conflict:
+    "Данные изменили на другом устройстве. Обновите страницу, чтобы увидеть свежие — изменения здесь пока не сохраняются.",
+};
+
+function SyncBanner({ problem }: { problem: NonNullable<SyncProblem> }) {
+  return (
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
+      <p>{SYNC_MESSAGES[problem]}</p>
+      <button
+        type="button"
+        onClick={() => location.reload()}
+        className="rounded-xl bg-amber-600 px-4 py-2 font-medium text-white transition hover:bg-amber-700"
+      >
+        Обновить
+      </button>
     </div>
   );
 }
