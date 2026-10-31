@@ -15,6 +15,8 @@ import {
 
 type Props = {
   getData: () => RawStore;
+  /** на сервере пока нет записей — только тогда предлагаем перенести старые из браузера */
+  offerLegacy: boolean;
   onReplace: (data: RawStore) => Promise<void>;
 };
 
@@ -27,9 +29,10 @@ function countEntries(data: RawStore) {
   return Array.isArray(data.entries) ? data.entries.length : 0;
 }
 
-export default function Backup({ getData, onReplace }: Props) {
+export default function Backup({ getData, offerLegacy, onReplace }: Props) {
   const [lastBackup, setLastBackup] = useState(loadLastBackup);
-  const [legacy, setLegacy] = useState(loadLegacyData);
+  // если на сервере уже есть записи, перенос из браузера заменил бы их — не предлагаем
+  const [legacy, setLegacy] = useState(() => (offerLegacy ? loadLegacyData() : null));
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);

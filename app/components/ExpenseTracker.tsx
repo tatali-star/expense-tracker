@@ -361,7 +361,13 @@ export default function ExpenseTracker({ initialData, initialVersions }: Props) 
           onAdd={addCatalogItem}
           onDelete={deleteCatalogItem}
         />
-        <Backup getData={currentData} onReplace={replaceAllData} />
+        <Backup
+          getData={currentData}
+          offerLegacy={
+            initial.entries.length + initial.recurring.length + initial.transfers.length === 0
+          }
+          onReplace={replaceAllData}
+        />
       </div>
     </div>
     </>
