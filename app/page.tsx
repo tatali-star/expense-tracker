@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { logout } from "./actions";
-import { isSignedIn } from "./lib/auth";
+import { currentUserId } from "./lib/auth";
 import { readStore } from "./lib/db";
 import ExpenseTracker, { ExpenseTrackerSkeleton } from "./components/ExpenseTracker";
 
@@ -35,7 +36,9 @@ export default function Home() {
 
 // вход и данные читаются на каждый запрос, поэтому компонент стоит за Suspense
 async function Tracker() {
-  if (!(await isSignedIn())) redirect("/login");
-  const { data, versions } = await readStore();
-  return <ExpenseTracker initialData={data} initialVersions={versions} />;
+  await connection(); // сессия есть только у запроса, при сборке её не читаем
+  const userId = await currentUserId();
+  if (!userId) redirect("/auth/sign-in");
+  const { data, versions } = await readStore(userId);
+  return <ExpenseTracker key={userId} initialData={data} initialVersions={versions} />;
 }

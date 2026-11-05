@@ -6,8 +6,6 @@ import {
   createBackup,
   formatDate,
   loadLastBackup,
-  loadLegacyData,
-  markLegacyMoved,
   parseBackup,
   saveLastBackup,
   todayISO,
@@ -15,13 +13,11 @@ import {
 
 type Props = {
   getData: () => RawStore;
-  /** на сервере пока нет записей — только тогда предлагаем перенести старые из браузера */
-  offerLegacy: boolean;
   onReplace: (data: RawStore) => Promise<void>;
 };
 
-/** Что ждёт подтверждения: файл копии или данные, оставшиеся в браузере от старой версии. */
-type Pending = { data: RawStore; source: "file" | "legacy"; date: string };
+/** Копия из файла, ждущая подтверждения. */
+type Pending = { data: RawStore; date: string };
 
 const buttonClass = "flex-1 rounded-xl px-4 py-2 text-sm font-medium transition";
 
@@ -29,10 +25,8 @@ function countEntries(data: RawStore) {
   return Array.isArray(data.entries) ? data.entries.length : 0;
 }
 
-export default function Backup({ getData, offerLegacy, onReplace }: Props) {
+export default function Backup({ getData, onReplace }: Props) {
   const [lastBackup, setLastBackup] = useState(loadLastBackup);
-  // если на сервере уже есть записи, перенос из браузера заменил бы их — не предлагаем
-  const [legacy, setLegacy] = useState(() => (offerLegacy ? loadLegacyData() : null));
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
@@ -58,7 +52,7 @@ export default function Backup({ getData, offerLegacy, onReplace }: Props) {
     if (!file) return;
     try {
       const backup = parseBackup(await file.text());
-      setPending({ data: backup.data, source: "file", date: backup.createdAt.slice(0, 10) });
+      setPending({ data: backup.data, date: backup.createdAt.slice(0, 10) });
       setMessage(null);
     } catch (err) {
       setPending(null);
@@ -71,14 +65,7 @@ export default function Backup({ getData, offerLegacy, onReplace }: Props) {
     setBusy(true);
     try {
       await onReplace(pending.data);
-      if (pending.source === "legacy") {
-        markLegacyMoved();
-        setLegacy(null);
-      }
-      setMessage({
-        text: pending.source === "legacy" ? "Записи перенесены в базу" : "Данные восстановлены из копии",
-        error: false,
-      });
+      setMessage({ text: "Данные восстановлены из копии", error: false });
     } catch {
       setMessage({ text: "Не удалось сохранить данные на сервере. Попробуйте ещё раз.", error: true });
     }
@@ -99,29 +86,10 @@ export default function Backup({ getData, offerLegacy, onReplace }: Props) {
           : "Копия ещё ни разу не сохранялась"}
       </p>
 
-      {legacy && !pending && (
-        <div className="animate-fade-in mt-4 rounded-xl bg-sky-50 p-3 text-sm text-sky-900">
-          <p>
-            В этом браузере остались записи из прежней версии трекера (операций:{" "}
-            {countEntries(legacy)}). Перенести их на сервер?
-          </p>
-          <button
-            type="button"
-            onClick={() => setPending({ data: legacy, source: "legacy", date: "" })}
-            className={`${buttonClass} mt-3 w-full bg-sky-600 text-white hover:bg-sky-700`}
-          >
-            Перенести
-          </button>
-        </div>
-      )}
-
       {pending ? (
         <div className="animate-fade-in mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
           <p>
-            {pending.source === "legacy"
-              ? "Заменить данные на сервере записями из этого браузера?"
-              : `Заменить все текущие данные копией от ${formatDate(pending.date)}?`}{" "}
-            Операций: {countEntries(pending.data)}. Текущие записи на сервере будут
+            Заменить все текущие данные копией от {formatDate(pending.date)}? Операций: {countEntries(pending.data)}. Текущие записи на сервере будут
             заменены на всех устройствах.
           </p>
           <div className="mt-3 flex gap-2">

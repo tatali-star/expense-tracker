@@ -50,8 +50,8 @@ type Props = {
 };
 
 export default function ExpenseTracker({ initialData, initialVersions }: Props) {
-  // данные приходят с сервера, но перенос из старой версии и дата копии — в localStorage
-  use(browser("Старые данные и дата резервной копии хранятся в localStorage."));
+  // данные приходят с сервера, но дата резервной копии — в localStorage
+  use(browser("Дата резервной копии хранится в localStorage."));
 
   const [initial] = useState(() => parseStore(initialData));
   const [entries, setEntries] = useState<Entry[]>(initial.entries);
@@ -363,9 +363,6 @@ export default function ExpenseTracker({ initialData, initialVersions }: Props) 
         />
         <Backup
           getData={currentData}
-          offerLegacy={
-            initial.entries.length + initial.recurring.length + initial.transfers.length === 0
-          }
           onReplace={replaceAllData}
         />
       </div>

@@ -93,15 +93,7 @@ export const RECURRING_CATEGORIES = [
   "Подписки",
 ];
 
-const DEFAULT_INCOME_CATEGORIES = [
-  "ИП Коробейникова (аренда и заказы)",
-  "Клиенты (наличные)",
-  "Марлен бюро",
-  "Бонусы/кешбеки",
-  "Инвестиции недвижимость",
-  "Саша",
-  "Подарки судьбы",
-];
+const DEFAULT_INCOME_CATEGORIES = ["Зарплата", "Подработка", "Подарки", "Другое"];
 
 const account = (
   id: string,
@@ -111,21 +103,8 @@ const account = (
 ): Account => ({ id, name, kind, initial: 0, currency });
 
 const DEFAULT_ACCOUNTS: Account[] = [
-  account("mbank-ip", "МБанк ИП", "account"),
-  account("sbank", "СБанк", "card"),
   account(DEFAULT_ACCOUNT_ID, "Наличные", "cash"),
-  account("tbank", "ТБанк", "card"),
-  account("vbank", "ВБанк", "card"),
-  account("ozonbank", "ОзонБанк", "card"),
-  account("fbank-sasha", "ФБанк Саша", "card"),
-  account("otpbank", "ОТПБанк", "card"),
-  account("vtb-stocks", "ВТБ акции", "account"),
-  account("sb-vanya", "СБ Ваня", "card"),
-  account("sb-mama", "СБ мама", "card"),
-  account("nz", "НЗ на развитие", "account"),
-  account("usd", "Доллары", "cash", "USD"),
-  account("eur", "Евро", "cash", "EUR"),
-  account("usdt", "USDT", "account", "USDT"),
+  account("card", "Карта", "card"),
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -141,7 +120,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ratesManual: false,
 };
 
-// v2: категории доходов и счета заменены на личный список пользователя
+// v2: обновлённый список счетов и доходов (данные таких копий читаются как есть)
 // v3: категории для обязательных платежей
 // v4: валюты у счетов
 const SETTINGS_VERSION = 4;
@@ -185,12 +164,9 @@ const FIXED_COLORS: Record<string, number> = {
   Подработка: 5,
   Подарки: 6,
   Инвестиции: 7,
-  "ИП Коробейникова (аренда и заказы)": 4,
   "Клиенты (наличные)": 5,
-  "Марлен бюро": 7,
   "Бонусы/кешбеки": 8,
   "Инвестиции недвижимость": 10,
-  Саша: 11,
   Кредиты: 3,
   Ипотека: 7,
   Коммуналка: 8,
@@ -258,37 +234,9 @@ export function parseSettings(
   if (parsed.version === SETTINGS_VERSION) return { settings, migrated: false };
   let migrated = settings;
   const version = parsed.version ?? 1;
-  if (version < 2) migrated = migrateToV2(migrated, entries);
   if (version < 3) migrated = migrateToV3(migrated);
   migrated = migrateToV4(migrated, entries);
   return { settings: migrated, migrated: true };
-}
-
-/**
- * Ставит новый список доходов и счетов, не теряя данных: счёт с тем же названием
- * сохраняет свой id и остаток, а старые счета с операциями остаются в конце списка.
- */
-function migrateToV2(old: Settings, entries: Entry[]): Settings {
-  const used = new Set(entries.map((e) => e.accountId));
-  const byName = (name: string) =>
-    old.accounts.find((a) => a.name.toLowerCase() === name.toLowerCase());
-
-  const accounts = DEFAULT_ACCOUNTS.map((d) => {
-    const prev = byName(d.name);
-    return prev ? { ...d, id: prev.id, initial: prev.initial } : d;
-  });
-  const kept = new Set(accounts.map((a) => a.id));
-  for (const a of old.accounts) {
-    if (!kept.has(a.id) && used.has(a.id)) accounts.push(a);
-  }
-
-  const usedSources = new Set(entries.map((e) => e.source));
-  return {
-    ...old,
-    categories: { expense: old.categories.expense, income: DEFAULT_INCOME_CATEGORIES },
-    sources: old.sources.filter((s) => s !== "Основная работа" || usedSources.has(s)),
-    accounts,
-  };
 }
 
 /** Добавляет категории обязательных платежей перед «Другое», если их ещё нет. */
@@ -303,6 +251,8 @@ function migrateToV3(old: Settings): Settings {
   };
 }
 
+const CURRENCY_ACCOUNTS: Record<string, Currency> = { Доллары: "USD", Евро: "EUR", USDT: "USDT" };
+
 /**
  * Ставит валюту счетам «Доллары», «Евро», «USDT». Раньше суммы по ним вводились
  * в рублях, поэтому счёт с операциями или остатком остаётся рублёвым — менять его
@@ -314,7 +264,7 @@ function migrateToV4(old: Settings, entries: Entry[]): Settings {
     ...old,
     accounts: old.accounts.map((a) => {
       if (a.currency) return a;
-      const preset = DEFAULT_ACCOUNTS.find((d) => d.id === a.id || d.name === a.name)?.currency;
+      const preset = CURRENCY_ACCOUNTS[a.name];
       const fresh = !used.has(a.id) && a.initial === 0;
       return { ...a, currency: preset && fresh ? preset : "RUB" };
     }),
@@ -437,43 +387,6 @@ export function isRawStore(data: unknown): data is RawStore {
     listOrEmpty(d.transfers) &&
     (d.settings == null || (typeof d.settings === "object" && !Array.isArray(d.settings)))
   );
-}
-
-// до базы данных всё хранилось в браузере под этими ключами
-const LEGACY_KEYS: Record<StoreKey, string> = {
-  entries: "expense-tracker:expenses",
-  settings: "expense-tracker:settings",
-  recurring: "expense-tracker:recurring",
-  transfers: "expense-tracker:transfers",
-};
-const LEGACY_MOVED_KEY = "expense-tracker:moved-to-db";
-
-/** Данные из этого браузера, сохранённые до перехода на базу, если их ещё не перенесли. */
-export function loadLegacyData(): RawStore | null {
-  try {
-    if (localStorage.getItem(LEGACY_MOVED_KEY)) return null;
-    const data = {} as RawStore;
-    for (const key of STORE_KEYS) {
-      const raw = localStorage.getItem(LEGACY_KEYS[key]);
-      data[key] = raw ? JSON.parse(raw) : null;
-    }
-    // одни настройки без операций старая версия создавала при любом открытии — это не данные
-    const hasRecords = [data.entries, data.recurring, data.transfers].some(
-      (list) => Array.isArray(list) && list.length > 0,
-    );
-    return hasRecords && isRawStore(data) ? data : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Отмечает перенос; сами старые данные в браузере остаются как запасная копия. */
-export function markLegacyMoved() {
-  try {
-    localStorage.setItem(LEGACY_MOVED_KEY, todayISO());
-  } catch {
-    // не критично — предложение перенести появится снова
-  }
 }
 
 const LAST_BACKUP_KEY = "expense-tracker:last-backup";
